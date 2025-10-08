@@ -1,4 +1,4 @@
-from FastChemTokenizerHF import FastChemTokenizerSelfies
+from fm3.FastChemTokenizerHF import FastChemTokenizerSelfies
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import torch
@@ -10,7 +10,7 @@ from torch.nn.utils import clip_grad_norm_
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import tqdm, random, pandas as pd, json, copy
-from fm3 import FM3
+from fm3.fm3 import FM3
 # -----------------------------------------------------------------------------
 # 1. Tokenizer
 # -----------------------------------------------------------------------------
@@ -104,7 +104,7 @@ def update_ema(model, ema, decay=ema_decay):
         for k in msd.keys():
             esd[k].mul_(decay).add_(msd[k], alpha=1 - decay)
 
-TEST_SEL = random.Random(42).sample(pd.read_csv("test.csv")["SELFIES"].tolist(), 3)
+TEST_SEL = random.Random(42).sample(pd.read_csv("./data/test.csv")["SELFIES"].tolist(), 3)
 
 # -----------------------------------------------------------------------------
 # 4. Training Loop
