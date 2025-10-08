@@ -3,6 +3,8 @@
 FM3 learns an Optimal-Transport vector field that pushes pure Gaussian noise into realistic 1D molecular embeddings (SELFIES/SMILES).
 The field is parameterized by a Mamba-inspired multi-scale CNN that regresses the instantaneous velocity vθ(xt,t).
 
+For the 2.1M curated and filtered data from ChemBL34, COCONUTDB, and SuperNatural3, you can e-mail me gbyuvd@proton.me
+
 | File                       | What it does                                      |
 | -------------------------- | ------------------------------------------------- |
 | `fm3.py`                   | full model + schedulers + backbones               |
