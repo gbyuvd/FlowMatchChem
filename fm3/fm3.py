@@ -405,13 +405,27 @@ class FM3(nn.Module):
             return tokens.cpu()
 
         elif mode == "discrete":
-            assert path is not None and source is not None, "Path and source must be provided for discrete sampling"
-            x_t = source.sample_like(torch.zeros(num_samples, seq_len, dtype=torch.long, device=device))
+            # Initialize tokens (random or from source)
+            if hasattr(source, "sample_like"):
+                # e.g., if a dataset object provides sample_like()
+                x_t = source.sample_like(torch.zeros(num_samples, seq_len, dtype=torch.long, device=device))
+            else:
+                # fallback: random tokens from vocabulary
+                x_t = torch.randint(
+                    low=0,
+                    high=self.vocab_size,
+                    size=(num_samples, seq_len),
+                    dtype=torch.long,
+                    device=device,
+                )
+
+            # Main discrete flow-matching update loop
             t_values = torch.linspace(1.0, 1e-3, steps, device=device)
             for t in t_values:
                 logits = self(x_t, t.repeat(num_samples), return_logits=True)
                 probs = torch.softmax(logits / temperature, dim=-1)
                 x_t = torch.argmax(probs, dim=-1)
+
             return x_t.cpu()
 
         else:
