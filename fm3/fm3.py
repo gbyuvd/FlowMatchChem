@@ -247,7 +247,7 @@ class VectorFieldBackbone(nn.Module):
         return SimpleNamespace(last_hidden_state=x)
 
 
-# ---------- lightweight Simple backbone (unchanged) -------------------------
+# ---------- lightweight Simple backbone  -------------------------
 class SimpleFlowBackbone(nn.Module):
     def __init__(self, hidden: int = 320, kernel_size: int = 5, dropout: float = 0.1, **kwargs):
         super().__init__()
@@ -279,7 +279,6 @@ BACKBONES = {
 
 
 # ---------- Main Model: FM3 --------------------------------------------------
-# fm3.py - Updated FM3 class initialization
 class FM3(nn.Module):
     def __init__(
         self,
@@ -376,7 +375,7 @@ class FM3(nn.Module):
             'hidden': self.hidden,
             'backbone_type': self.backbone_type,
             'eps': self.eps,
-            'dropout': self.dropout,  # Now this will work
+            'dropout': self.dropout,  
         }
         with open(os.path.join(save_directory, "config.json"), "w") as f:
             json.dump(config, f, indent=2)
@@ -390,4 +389,5 @@ class FM3(nn.Module):
         config.update(override_kwargs)
         model = cls(**config)
         model.load_state_dict(torch.load(model_path, map_location='cpu'))
+
         return model
