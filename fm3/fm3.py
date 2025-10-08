@@ -1,5 +1,8 @@
 # fm3.py
-# Flow Matching for Molecules (FM3) - Lightweight, modular, laptop-friendly
+# ------------- FM3 ------------------
+# Flow Matching for Molecules (FM3) 
+# @gbyuvd
+# -------------------------------------
 import math
 import os
 import json
