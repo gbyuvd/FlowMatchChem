@@ -247,7 +247,7 @@ class VectorFieldBackbone(nn.Module):
         return SimpleNamespace(last_hidden_state=x)
 
 
-# ---------- lightweight Simple backbone  -------------------------
+# ---------- lightweight Simple backbone (unchanged) -------------------------
 class SimpleFlowBackbone(nn.Module):
     def __init__(self, hidden: int = 320, kernel_size: int = 5, dropout: float = 0.1, **kwargs):
         super().__init__()
@@ -279,6 +279,7 @@ BACKBONES = {
 
 
 # ---------- Main Model: FM3 --------------------------------------------------
+# fm3.py - Updated FM3 class initialization
 class FM3(nn.Module):
     def __init__(
         self,
@@ -331,12 +332,20 @@ class FM3(nn.Module):
     def get_input_embeddings(self) -> nn.Embedding:
         return self.embed
 
-    def forward(self, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    def forward(self, x_t: torch.Tensor, t: torch.Tensor, return_logits=False) -> torch.Tensor:
+        if x_t.dtype == torch.long:
+            x_t = self.embed(x_t)  # turn tokens into embeddings
         time_emb = self.time_emb(t)
         x_with_time = F.layer_norm(x_t + time_emb, (x_t.shape[-1],))
         h = self.backbone(x_with_time).last_hidden_state
         h = self.output_norm(h)
         v = self.v_head(h)
+        if return_logits:
+            # Predict logits over vocabulary instead of continuous vector field
+            logits = torch.matmul(v, self.embed.weight.T)  # tied weights
+            return logits
+        return v
+
         return v
 
     @torch.no_grad()
@@ -365,6 +374,45 @@ class FM3(nn.Module):
         noise = torch.randn_like(emb) * noise_scale
         # Start from the molecule + small noise, then integrate forward
         return self.sample_euler(emb + noise, steps)
+    
+    @torch.no_grad()
+    def generate(
+        self,
+        tokenizer,
+        path=None,
+        source=None,
+        num_samples=8,
+        seq_len=64,
+        steps=20,
+        mode="discrete",
+        temperature=1.0,
+    ):
+        """
+        Unified generation API for both discrete and continuous flow-matching.
+        - mode='discrete': uses Meta-style discrete flow sampler.
+        - mode='continuous': uses ODE-based Euler integration.
+        """
+        device = next(self.parameters()).device
+
+        if mode == "continuous":
+            # Start from Gaussian noise
+            z = torch.randn(num_samples, seq_len, self.hidden, device=device)
+            x = self.sample_from_noise(z, steps=steps)
+            tokens = torch.argmax(torch.matmul(x, self.embed.weight.T), dim=-1)
+            return tokens.cpu()
+
+        elif mode == "discrete":
+            assert path is not None and source is not None, "Path and source must be provided for discrete sampling"
+            x_t = source.sample_like(torch.zeros(num_samples, seq_len, dtype=torch.long, device=device))
+            t_values = torch.linspace(1.0, 1e-3, steps, device=device)
+            for t in t_values:
+                logits = self(x_t, t.repeat(num_samples), return_logits=True)
+                probs = torch.softmax(logits / temperature, dim=-1)
+                x_t = torch.argmax(probs, dim=-1)
+            return x_t.cpu()
+
+        else:
+            raise ValueError("mode must be 'discrete' or 'continuous'")
 
     # --- Hugging Face-style Save/Load ---
     def save_pretrained(self, save_directory: str):
@@ -375,7 +423,7 @@ class FM3(nn.Module):
             'hidden': self.hidden,
             'backbone_type': self.backbone_type,
             'eps': self.eps,
-            'dropout': self.dropout,  
+            'dropout': self.dropout,  # Now this will work
         }
         with open(os.path.join(save_directory, "config.json"), "w") as f:
             json.dump(config, f, indent=2)
@@ -389,5 +437,5 @@ class FM3(nn.Module):
         config.update(override_kwargs)
         model = cls(**config)
         model.load_state_dict(torch.load(model_path, map_location='cpu'))
-
         return model
+    
