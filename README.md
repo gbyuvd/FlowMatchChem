@@ -14,7 +14,7 @@ For the 2.1M curated and filtered data from ChemBL34, COCONUTDB, and SuperNatura
 | `TimeAdditiveEmbedder`     | sinusoidal → MLP → residual (no param explosion)  |
 
 # Early Test Result on Small Data (24K)
-trained for 10 'epochs' (steps = 10 * len(dataloader)) using discrete trainer:
+trained for 10 'epochs' (steps = 10 * len(dataloader)) using discrete trainer and simple backbone:
 ```
 NUM_SAMPLES = 6
 MAX_LEN = 12
