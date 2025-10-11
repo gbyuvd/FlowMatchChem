@@ -5,6 +5,7 @@
 # -------------------------------------
 import torch
 from torch import nn
+import math
 
 # -------- Scheduler --------
 class PolynomialConvexScheduler:
@@ -14,6 +15,24 @@ class PolynomialConvexScheduler:
         alpha_t = t.pow(self.n)
         d_alpha_t = self.n * t.pow(self.n - 1)
         return type("SchedOut", (), {"alpha_t": alpha_t, "d_alpha_t": d_alpha_t})
+
+
+class CosineSmoothScheduler:
+    """
+    Smooth, bounded α(t) for stable flow matching.
+    α(t) = 0.5 * (1 - cos(pi * t))
+    dα/dt = 0.5 * pi * sin(pi * t)
+    Range: α ∈ [0, 1], dα bounded ∈ [0, 1.57]
+    """
+    def __init__(self, eps: float = 1e-5):
+        self.eps = eps
+
+    def __call__(self, t: torch.Tensor):
+        t = torch.clamp(t, self.eps, 1 - self.eps)
+        alpha_t = 0.5 * (1 - torch.cos(math.pi * t))
+        d_alpha_t = 0.5 * math.pi * torch.sin(math.pi * t)
+        return type("SchedOut", (), {"alpha_t": alpha_t, "d_alpha_t": d_alpha_t})
+
 
 # -------- Source Distributions --------
 class MaskedSourceDistribution:
@@ -40,8 +59,13 @@ class MixtureDiscreteProbPath:
 
 
 # -------- Builders --------
-def get_path(scheduler_type="polynomial", exponent=2.0):
-    return MixtureDiscreteProbPath(PolynomialConvexScheduler(exponent))
+def get_path(scheduler_type="cosine", exponent=2.0):
+    if scheduler_type == "cosine":
+        return MixtureDiscreteProbPath(CosineSmoothScheduler())
+    elif scheduler_type == "polynomial":
+        return MixtureDiscreteProbPath(PolynomialConvexScheduler(exponent))
+    else:
+        raise ValueError(f"Unknown scheduler: {scheduler_type}")
 
 def get_source_distribution(source_distribution: str, vocab_size: int):
     if source_distribution == "mask":
@@ -51,6 +75,9 @@ def get_source_distribution(source_distribution: str, vocab_size: int):
 
 
 def get_loss_function(name, path=None):
-    from fm3.loss import MixturePathGeneralizedKL
-    if name == "generalized_kl": return MixturePathGeneralizedKL(path)
+    from fm3.loss import MixturePathGeneralizedKL, StableMixturePathKL
+    if name == "stable_kl":
+        return StableMixturePathKL(path)
+    elif name == "generalized_kl":
+        return MixturePathGeneralizedKL(path)
     raise ValueError(f"Unknown loss {name}")

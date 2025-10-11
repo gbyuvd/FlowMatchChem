@@ -45,10 +45,10 @@ loss_fn = get_loss_function("generalized_kl", path)
 
 model = FM3(vocab_size=len(tokenizer), hidden=320, backbone_type="simple").to(device)
 opt = AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
-scaler = GradScaler()
+scaler = torch.amp.GradScaler()
 
 # ---------------- Training ----------------
-max_steps = len(dl) * 10
+max_steps = int(len(dl) * 0.3)
 print("🚀 Starting discrete flow training for FM3")
 iterator = iter(dl)
 
@@ -64,7 +64,7 @@ for step_idx in tqdm.trange(max_steps):
     t = torch.rand(x_1.shape[0], device=device)
     x_t = path.sample(t, x_0, x_1).x_t
 
-    with torch.cuda.amp.autocast(enabled=True):
+    with torch.amp.autocast(device_type='cuda', dtype=torch.float32):
         logits = model(x_t, t, return_logits=True)
         loss = loss_fn(logits, x_1, x_t, t)
 

@@ -3,16 +3,17 @@
 # Flow Matching for Molecules (FM3) 
 # @gbyuvd
 # -------------------------------------
-import math
 import os
 import json
 from typing import Optional, Dict, Any
 from types import SimpleNamespace
 
 import torch
+import math
 import torch.nn as nn
 import torch.nn.functional as F
 from torchdiffeq import odeint_adjoint as odeint
+from fm3.transformer_backbone import TransformerFlowBackbone
 
 
 # ---------- scheduler --------------------------------------------------------
@@ -28,33 +29,44 @@ class OptimalTransportSchedule:
         d_sigma = -torch.ones_like(t)
         return alpha, sigma, d_alpha, d_sigma
 
-
 # ---------- time embedding ---------------------------------------------------
-class TimeAdditiveEmbedder(nn.Module):
-    def __init__(self, hidden_size: int, max_period: int = 10000):
+class TimeAdditiveEmbedderCond(nn.Module):
+    """
+    Time embedding adapted for AdaLN conditioning.
+    Outputs [B, cond_dim] instead of [B, 1, H].
+    """
+    def __init__(self, cond_dim: int, max_period: int = 10000):
         super().__init__()
-        half = hidden_size // 2
-        self.register_buffer('freqs', torch.exp(
-            -math.log(max_period) * torch.arange(half, dtype=torch.float32) / half))
+        half = cond_dim // 2
+        self.register_buffer(
+            "freqs",
+            torch.exp(-math.log(max_period) * torch.arange(half, dtype=torch.float32) / half),
+            persistent=False,
+        )
 
         self.mlp = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(cond_dim, cond_dim),
             nn.SiLU(),
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(cond_dim, cond_dim),
         )
+
         for layer in self.mlp:
             if isinstance(layer, nn.Linear):
                 nn.init.normal_(layer.weight, std=0.02)
                 nn.init.zeros_(layer.bias)
-        self.offset = nn.Parameter(torch.zeros(1, 1, hidden_size))
 
-    def forward(self, t: torch.Tensor):
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        # Clamp t to [0,1]
         t = torch.clamp(t, 0.0, 1.0)
+        # Compute sinusoidal features
         args = t[:, None] * self.freqs[None].to(t)
-        emb = torch.cat([torch.cos(args), torch.sin(args)], -1)
+        emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if emb.shape[-1] % 2:
-            emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], -1)
-        return 0.1 * self.mlp(emb)[:, None, :] + self.offset
+            emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=-1)
+        # Small MLP refinement
+        emb = 0.1 * self.mlp(emb)
+        return emb  # [B, cond_dim]
+
 
 
 # ---------- linear tail ------------------------------------------------------
@@ -250,7 +262,7 @@ class VectorFieldBackbone(nn.Module):
         return SimpleNamespace(last_hidden_state=x)
 
 
-# ---------- lightweight Simple backbone (unchanged) -------------------------
+# ---------- lightweight Simple backbone  -------------------------
 class SimpleFlowBackbone(nn.Module):
     def __init__(self, hidden: int = 320, kernel_size: int = 5, dropout: float = 0.1, **kwargs):
         super().__init__()
@@ -278,11 +290,12 @@ class SimpleFlowBackbone(nn.Module):
 BACKBONES = {
     'simple': SimpleFlowBackbone,
     'vectorf': VectorFieldBackbone,  # Optimized Mamba-inspired architecture
+    'tf': TransformerFlowBackbone,  # Standard Transformer with AdaLN 
 }
 
 
 # ---------- Main Model: FM3 --------------------------------------------------
-# fm3.py - Updated FM3 class initialization
+# FM3 class initialization
 class FM3(nn.Module):
     def __init__(
         self,
@@ -290,7 +303,7 @@ class FM3(nn.Module):
         hidden: int = 320,
         backbone_type: str = 'simple',
         eps: float = 1e-5,
-        dropout: float = 0.1,  # Add this parameter
+        dropout: float = 0.1, 
         **backbone_kwargs
     ):
         super().__init__()
@@ -312,7 +325,7 @@ class FM3(nn.Module):
             dropout=dropout,
             **backbone_kwargs  # ← n_layers, n_heads, mlp_mult, kernel_size, etc.
         )
-        self.time_emb = TimeAdditiveEmbedder(hidden)
+        self.time_emb = TimeAdditiveEmbedderCond(cond_dim=backbone_kwargs.get("cond_dim", hidden))
         self.lin_tail = LinearTail(hidden, eps=eps)
         
         # Improved vector field head for regression
@@ -323,6 +336,11 @@ class FM3(nn.Module):
             nn.Dropout(dropout * 0.5),  # Use the dropout parameter
             nn.Linear(hidden * 2, hidden),
         )
+
+        # Add learnable tail weight for better stability (how much it should trust the linear tail)
+        self.tail_weight = nn.Parameter(torch.tensor(0.5))
+
+
         # Initialize with small weights for stable flow
         for layer in self.v_head:
             if isinstance(layer, nn.Linear):
@@ -336,20 +354,34 @@ class FM3(nn.Module):
         return self.embed
 
     def forward(self, x_t: torch.Tensor, t: torch.Tensor, return_logits=False) -> torch.Tensor:
+        # 1. Embedding
         if x_t.dtype == torch.long:
-            x_t = self.embed(x_t)  # turn tokens into embeddings
-        time_emb = self.time_emb(t)
-        x_with_time = F.layer_norm(x_t + time_emb, (x_t.shape[-1],))
-        h = self.backbone(x_with_time).last_hidden_state
-        h = self.output_norm(h)
-        v = self.v_head(h)
-        if return_logits:
-            # Predict logits over vocabulary instead of continuous vector field
-            logits = torch.matmul(v, self.embed.weight.T)  # tied weights
-            return logits
-        return v
+            x_t = self.embed(x_t)  # [B, L, H]
 
-        return v
+        # 2. Time conditioning
+        time_emb = self.time_emb(t)  # [B, cond_dim]
+        if self.backbone_type == "tf":
+            x_with_time = F.layer_norm(x_t, (x_t.shape[-1],))
+            h = self.backbone(x_with_time, time_cond=time_emb).last_hidden_state
+        else:
+            # for simple/vectorf backbones
+            time_broadcast = time_emb[:, None, :] if time_emb.ndim == 2 else time_emb
+            x_with_time = F.layer_norm(x_t + time_broadcast, (x_t.shape[-1],))
+            h = self.backbone(x_with_time).last_hidden_state
+        v_learned = self.v_head(h)                   # [B, L, H]
+
+        # 4. Linear tail (analytic drift)
+        alpha, sigma, d_alpha, d_sigma = self.sched(t)
+        v_linear = self.lin_tail(x_t, alpha, d_alpha)  # [B, L, H]
+
+        # 5. Combine
+        v_total = v_learned + self.tail_weight * v_linear
+
+        if return_logits:
+            logits = torch.matmul(v_total, self.embed.weight.T)  # [B, L, vocab_size]
+            return logits
+        return v_total
+
 
     @torch.no_grad()
     def sample_from_noise(self, noise: torch.Tensor, steps: int = 50) -> torch.Tensor:
@@ -388,48 +420,51 @@ class FM3(nn.Module):
         seq_len=64,
         steps=20,
         mode="discrete",
-        temperature=1.0,
+        temperature=2.5,
+        eos_suppress=1.0,
     ):
         """
         Unified generation API for both discrete and continuous flow-matching.
-        - mode='discrete': uses Meta-style discrete flow sampler.
-        - mode='continuous': uses ODE-based Euler integration.
+        - mode='discrete': stochastic categorical flow sampling.
+        - mode='continuous': ODE-based Euler integration in embedding space.
         """
         device = next(self.parameters()).device
 
         if mode == "continuous":
-            # Start from Gaussian noise
+            # ---- Continuous flow sampling ----
             z = torch.randn(num_samples, seq_len, self.hidden, device=device)
             x = self.sample_from_noise(z, steps=steps)
             tokens = torch.argmax(torch.matmul(x, self.embed.weight.T), dim=-1)
             return tokens.cpu()
 
         elif mode == "discrete":
-            # Initialize tokens (random or from source)
+            # ---- Discrete flow sampling ----
             if hasattr(source, "sample_like"):
-                # e.g., if a dataset object provides sample_like()
                 x_t = source.sample_like(torch.zeros(num_samples, seq_len, dtype=torch.long, device=device))
             else:
-                # fallback: random tokens from vocabulary
                 x_t = torch.randint(
-                    low=0,
-                    high=self.vocab_size,
-                    size=(num_samples, seq_len),
-                    dtype=torch.long,
-                    device=device,
+                    low=0, high=self.vocab_size, size=(num_samples, seq_len), dtype=torch.long, device=device
                 )
 
-            # Main discrete flow-matching update loop
-            t_values = torch.linspace(1.0, 1e-3, steps, device=device)
+            # Forward time from near-source → near-data
+            t_values = torch.linspace(1e-3, 1.0, steps, device=device)
+
             for t in t_values:
                 logits = self(x_t, t.repeat(num_samples), return_logits=True)
+                if eos_suppress > 0:
+                    logits[..., tokenizer.eos_token_id] -= eos_suppress
+
                 probs = torch.softmax(logits / temperature, dim=-1)
-                x_t = torch.argmax(probs, dim=-1)
+                probs = 0.95 * probs + 0.05 / probs.size(-1)  # tiny uniform noise
+                x_t = torch.multinomial(
+                    probs.view(-1, probs.size(-1)), 1
+                ).view(probs.size(0), probs.size(1))
 
             return x_t.cpu()
 
         else:
             raise ValueError("mode must be 'discrete' or 'continuous'")
+
 
     # --- Hugging Face-style Save/Load ---
     def save_pretrained(self, save_directory: str):
