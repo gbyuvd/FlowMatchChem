@@ -1,3 +1,7 @@
+#transformer_backbone.py
+# ------------ Utils ------------------
+# Utilities for FM3: sampling, visualization, trajectory analysis
+# -------------------------------------
 import torch
 import torch.nn.functional as F
 import selfies as sf

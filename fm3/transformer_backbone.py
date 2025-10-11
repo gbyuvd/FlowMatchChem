@@ -1,3 +1,9 @@
+#transformer_backbone.py
+# ------------ TF Backbone ------------
+# Inspired by Meta's Implementation
+# AdaLN / Flow–DiT hybrid)
+# This backbone uses self-attention + MLPs with AdaLayerNorm inside each block.
+# -------------------------------------
 import math
 import torch
 import torch.nn as nn

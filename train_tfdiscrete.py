@@ -43,12 +43,12 @@ path = get_path("cosine")
 source = get_source_distribution("mask", vocab_size=len(tokenizer))
 loss_fn = get_loss_function("stable_kl", path)
 
-model = FM3(vocab_size=len(tokenizer), cond_dim=128, n_layers=2, n_heads=4, backbone_type="tf").to(device)
+model = FM3(vocab_size=len(tokenizer), cond_dim=128, n_layers=4, n_heads=4, backbone_type="tf").to(device)
 opt = AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
 scaler = torch.amp.GradScaler()
 
 # ---------------- Training ----------------
-max_steps = int(len(dl) * 0.3)
+max_steps = int(len(dl) * 1)
 print("🚀 Starting discrete flow training for FM3")
 
 iterator = iter(dl)
